@@ -7,7 +7,7 @@
 #define SSID "opticalflow_hub"
 #define PASS 0
 #define HOST "192.168.4.1"
-#define PORT 83
+#define PORT 80
 #define ORIENTATION 'A' + (PORT - 80)
   
 #define HEIGHT 12
@@ -97,11 +97,15 @@ void init_cam() {
 void calc_otpflw() {
   unsigned long t = millis();
 
+  static int failed_capture_counter = 0;
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
     Serial.printf("Camera capture failed\n");
+    failed_capture_counter += 1;    
     return;
   }
+  if (failed_capture_counter > 20) esp_restart();
+  if (failed_capture_counter > 0) failed_capture_counter -= 1;
 
   // Serial.printf("%dx%d, %d, %d\n", fb->height, fb->width, fb->format, fb->len);
   esp_camera_fb_return(fb);
@@ -220,10 +224,10 @@ void *run_tcp_client(void *pointer) {
         sprintf(msg, "%d,%d%c", (int)(g_sy*10), (int)(g_sx*10), ORIENTATION);
         client.print(msg);
 
-        counter = 0;  
+        counter = 0;
         bool connection_lost = false;
         while (!client.available() || client.read() != '$') {
-          if (counter > 200) {
+          if (counter > 500) {
             connection_lost = true;
             break;
           }
