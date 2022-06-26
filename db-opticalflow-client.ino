@@ -7,11 +7,13 @@
 #define SSID "opticalflow_hub"
 #define PASS 0
 #define HOST "192.168.4.1"
-#define PORT 82
+#define PORT 83
 #define ORIENTATION 'A' + (PORT - 80)
-
+  
 #define HEIGHT 12
 #define WIDTH 16
+
+WiFiClient client;
 
 hw_timer_t *timer1 = NULL;
 hw_timer_t *timer2 = NULL;
@@ -178,23 +180,24 @@ void start_timer2() {
 }
 
 void *run_tcp_client(void *pointer) {
-  WiFiClient client;
-  char msg[10];
-  int counter = 0;
+  static char msg[10];
+  static int counter = 0;
   while (true) {
-    // Serial.printf("\nConnecting to %s\n", SSID);
+    Serial.printf("\nConnecting to %s\n", SSID);
     WiFi.begin(SSID, PASS);
+    counter = 0;
     while (WiFi.status() != WL_CONNECTED) {
       delay(1000);
       counter += 1;
       if (counter > 10) {
-        // Serial.println("Wifi connection time out");
-        esp_restart();
-        return NULL;
+        Serial.println("Wifi connection time out");
+        break;
       }
     }
 
-    // Serial.printf("\nWiFi connected %s\n", WiFi.localIP().toString());
+    if (counter > 10) continue;
+
+    Serial.printf("\nWiFi connected %s\n", WiFi.localIP().toString());
 
     while (true) {
       Serial.println("Opening a connection...");
@@ -203,15 +206,15 @@ void *run_tcp_client(void *pointer) {
         delay(100);
         counter += 1;
         if (counter > 10) {
-          // Serial.println("Connection time out");
+          Serial.println("Connection time out");
           break;
         }
       }
       
       if (counter > 10) break;
 
-      // Serial.println("Done");
-      // Serial.println("Start streaming");
+      Serial.println("Done");
+      Serial.println("Start streaming");
       
       while (true) {
         sprintf(msg, "%d,%d%c", (int)(g_sy*10), (int)(g_sx*10), ORIENTATION);
@@ -235,6 +238,7 @@ void *run_tcp_client(void *pointer) {
 
       client.stop();
       Serial.println("Stop streaming");
+      delay(100);
     }
   }
 }
