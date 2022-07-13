@@ -4,16 +4,26 @@
 #include "camera_pins.h"
 #include "Coarse2FineFlowWrapper.h"
 
+#define LIMIT(number, min, max) (number > max ? max : (number < min ? min : number))
+
 #define SSID "opticalflow_hub"
 #define PASS 0
 #define HOST "192.168.4.1"
 #define PORT 80
 #define ORIENTATION 'A' + (PORT - 80)
-  
+
+// #define OUTPUT_UART
+#define OUTPUT_PWM
+
+#define LED_CH0 12
+#define LED_CH1 14
+#define FREQ 5000
+#define RESOLUTION 8
+#define LED_PIN_CH0 12
+#define LED_PIN_CH1 14
+
 #define HEIGHT 12
 #define WIDTH 16
-
-WiFiClient client;
 
 hw_timer_t *timer1 = NULL;
 hw_timer_t *timer2 = NULL;
@@ -27,8 +37,10 @@ static double g_img1[HEIGHT*WIDTH];
 static double g_vy[HEIGHT*WIDTH];
 static double g_vx[HEIGHT*WIDTH];
 static double g_warpI2[HEIGHT*WIDTH];
-static double g_sy = 0;
-static double g_sx = 0;
+volatile double g_dy = 0;
+volatile double g_dx = 0;
+volatile double g_sy = 0;
+volatile double g_sx = 0;
 
 void init_cam() {
   camera_config_t config;
@@ -53,8 +65,8 @@ void init_cam() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_GRAYSCALE;
   
-  // if PSRAM IC present, init with UXGA resolution and higher JPEG quality
-  //                      for larger pre-allocated frame buffer.
+  // if PSRAM IC present, init with UXGA resolution and higher JPEG quality 
+  // for larger pre-allocated frame buffer.
   if (psramFound()) {
     Serial.printf("PSRAM found\n");
     config.frame_size = FRAMESIZE_QVGA;
@@ -95,7 +107,16 @@ void init_cam() {
 }
 
 void calc_otpflw() {
-  unsigned long t = millis();
+  #ifdef OUTPUT_UART
+  Serial.printf("$%d,%d\n", 
+    LIMIT((int)(g_dy*500), -128, 127),
+    LIMIT((int)(g_dx*500), -128, 127));
+#endif
+
+#ifdef OUTPUT_PWM
+  ledcWrite(LED_CH0, LIMIT(g_dy*500+128, 0, 255));
+  ledcWrite(LED_CH1, LIMIT(g_dx*500+128, 0, 255));
+#endif
 
   static int failed_capture_counter = 0;
   camera_fb_t *fb = esp_camera_fb_get();
@@ -128,27 +149,27 @@ void calc_otpflw() {
 
   memcpy(g_img0, g_img1, HEIGHT*WIDTH*sizeof(double));
 
-  double sy = 0;
-  double sx = 0;
+  double dy = 0;
+  double dx = 0;
   for (int i = 0; i < HEIGHT*WIDTH; i += 1) {
-    sy += g_vy[i];
-    sx += g_vx[i];
+    dy += g_vy[i];
+    dx += g_vx[i];
   }
 
-  sy = sy / HEIGHT;
-  sx = sx / WIDTH;
-  g_sy += sy;
-  g_sx += sx;
+  dy = dy / (HEIGHT*WIDTH);
+  dx = dx / (HEIGHT*WIDTH);
+  g_dy = dy;
+  g_dx = dx;
+  g_sy += dy * 0.125; // v*t = s
+  g_sx += dx * 0.125;
 
   // Serial.printf("y = %f, x = %f, fps: %d\n", sy, sx, (int)(1000/(millis() - t)));
-
   // Serial.print("y: ");
   // for (int i = 0; i < abs(g_sy); i += 1) {
   //   if (g_sy >= 0) Serial.print("+");
   //   else Serial.print("-");
   // }
   // Serial.println();
-
   // Serial.print("x: ");
   // for (int i = 0; i < abs(g_sx); i += 1) {
   //   if (g_sx >= 0) Serial.print("+");
@@ -163,9 +184,7 @@ void IRAM_ATTR onTimer1() {
   portEXIT_CRITICAL_ISR(&timer1Mux);
 }
 
-void IRAM_ATTR onTimer2() {
-  
-}
+void IRAM_ATTR onTimer2() {}
 
 // timer 8mhz. 80,000,000/prescaler(1000)/counter(10000) = 8hz
 void start_timer1() {  
@@ -175,15 +194,16 @@ void start_timer1() {
   timerAlarmEnable(timer1);
 }
 
-// 1000hz
+// 8hz
 void start_timer2() {
-  timer2 = timerBegin(1, 80, true);
+  timer2 = timerBegin(1, 1000, true);
   timerAttachInterrupt(timer2, &onTimer2, true);
-  timerAlarmWrite(timer2, 1000, true);
+  timerAlarmWrite(timer2, 10000, true);
   timerAlarmEnable(timer2);
 }
 
 void *run_tcp_client(void *pointer) {
+  WiFiClient client;
   static char msg[10];
   static int counter = 0;
   while (true) {
@@ -248,23 +268,28 @@ void *run_tcp_client(void *pointer) {
 }
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
   Serial.printf("Start program\n");
 
-  // https://docs.espressif.com/projects/esp-idf/en/v4.3-beta2/esp32/api-reference/system/esp_pthread.html
-  esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
-  cfg.stack_size = (3*1024);
-  esp_pthread_set_cfg(&cfg);
-
-  pthread_t thread;
-  if (pthread_create(&thread, nullptr, run_tcp_client, (void *)0)) {
-    Serial.printf("Can't create thread run_tcp_client");
-    esp_restart();
-  }
+  ledcSetup(LED_CH0, FREQ, RESOLUTION);
+  ledcSetup(LED_CH1, FREQ, RESOLUTION);
+  ledcAttachPin(LED_PIN_CH0, LED_CH0);
+  ledcAttachPin(LED_PIN_CH1, LED_CH1);
   
   init_cam();
   start_timer1();
-  start_timer2();
+  // start_timer2();
+
+  // https://docs.espressif.com/projects/esp-idf/en/v4.3-beta2/esp32/api-reference/system/esp_pthread.html
+  // esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
+  // cfg.stack_size = (3*1024);
+  // esp_pthread_set_cfg(&cfg);
+    
+  // pthread_t thread;
+  // if (pthread_create(&thread, nullptr, run_tcp_client, (void *)0)) {
+  //   Serial.printf("Can't create thread run_tcp_client");
+  //   esp_restart();
+  // }
 }
 
 void loop() {
