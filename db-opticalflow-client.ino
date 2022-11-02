@@ -13,17 +13,20 @@
 #define ORIENTATION 'A' + (PORT - 80)
 
 // #define OUTPUT_UART
-#define OUTPUT_PWM
+// #define OUTPUT_PWM
 
 #define LED_CH0 12
 #define LED_CH1 14
-#define FREQ 5000
+#define FREQ 1000
 #define RESOLUTION 8
 #define LED_PIN_CH0 12
 #define LED_PIN_CH1 14
 
 #define HEIGHT 12
-#define WIDTH 16
+#define WIDTH 12
+#define PIXEL_SIZE 4
+#define PIXEL_START_Y ((240/PIXEL_SIZE - HEIGHT)/2)
+#define PIXEL_START_X ((320/PIXEL_SIZE - WIDTH)/2)
 
 hw_timer_t *timer1 = NULL;
 hw_timer_t *timer2 = NULL;
@@ -67,16 +70,9 @@ void init_cam() {
   
   // if PSRAM IC present, init with UXGA resolution and higher JPEG quality 
   // for larger pre-allocated frame buffer.
-  if (psramFound()) {
-    Serial.printf("PSRAM found\n");
-    config.frame_size = FRAMESIZE_QVGA;
-    config.jpeg_quality = 10;
-    config.fb_count = 2;
-  } else {
-    config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 12;
-    config.fb_count = 1;
-  }
+  config.frame_size = FRAMESIZE_QVGA;
+  config.jpeg_quality = 10;
+  config.fb_count = 2;
 
 #if defined(CAMERA_MODEL_ESP_EYE)
   pinMode(13, INPUT_PULLUP);
@@ -93,9 +89,30 @@ void init_cam() {
   sensor_t * s = esp_camera_sensor_get();
   // initial sensors are flipped vertically and colors are a bit saturated
   if (s->id.PID == OV3660_PID) {
-    s->set_vflip(s, 1); // flip it back
-    s->set_brightness(s, 1); // up the brightness just a bit
-    s->set_saturation(s, -2); // lower the saturation
+    s->set_gain_ctrl(s, 0); // auto gain off (1 or 0)
+    s->set_exposure_ctrl(s, 0); // auto exposure off (1 or 0)
+    s->set_agc_gain(s, 0); // set gain manually (0 - 30)
+    s->set_aec_value(s, 600); // set exposure manually (0-1200)
+    s->set_brightness(s, 0); // (-2 to 2) - set brightness
+    s->set_awb_gain(s, 0); // Auto White Balance?
+    s->set_lenc(s, 0); // lens correction? (1 or 0)
+    s->set_raw_gma(s, 1); // (1 or 0)?
+    s->set_quality(s, 63); // (0 - 63)
+    s->set_whitebal(s, 1); // white balance
+    s->set_wb_mode(s, 1); // white balance mode (0 to 4)
+    s->set_aec2(s, 0); // automatic exposure sensor? (0 or 1)
+    s->set_aec_value(s, 0); // automatic exposure correction? (0-1200)
+    s->set_saturation(s, 0); // (-2 to 2)
+    s->set_hmirror(s, 0); // (0 or 1) flip horizontally
+    s->set_gainceiling(s, GAINCEILING_32X); // Image gain (GAINCEILING_x2, x4, x8, x16, x32, x64 or x128)
+    s->set_contrast(s, 0); // (-2 to 2)
+    s->set_sharpness(s, 0); // (-2 to 2)
+    s->set_colorbar(s, 0); // (0 or 1) - testcard
+    s->set_special_effect(s, 0);
+    s->set_ae_level(s, 0); // auto exposure levels (-2 to 2)
+    s->set_bpc(s, 0); // black pixel correction
+    s->set_wpc(s, 0); // white pixel correction
+    s->set_dcw(s, 0); // downsize enable? (1 or 0)?
   }
   // drop down frame size for higher initial frame rate
   s->set_framesize(s, FRAMESIZE_QVGA);
@@ -107,15 +124,16 @@ void init_cam() {
 }
 
 void calc_otpflw() {
-  #ifdef OUTPUT_UART
+  unsigned long t = millis();
+#ifdef OUTPUT_UART
   Serial.printf("$%d,%d\n", 
-    LIMIT((int)(g_dy*500), -128, 127),
-    LIMIT((int)(g_dx*500), -128, 127));
+    LIMIT((int)(g_dy), -128, 127),
+    LIMIT((int)(g_dx), -128, 127));
 #endif
 
 #ifdef OUTPUT_PWM
-  ledcWrite(LED_CH0, LIMIT(g_dy*500+128, 0, 255));
-  ledcWrite(LED_CH1, LIMIT(g_dx*500+128, 0, 255));
+  ledcWrite(LED_CH0, LIMIT(g_dy+128, 0, 255));
+  ledcWrite(LED_CH1, LIMIT(g_dx+128, 0, 255));
 #endif
 
   static int failed_capture_counter = 0;
@@ -132,20 +150,20 @@ void calc_otpflw() {
   esp_camera_fb_return(fb);
 
   // Scale
-  for (int i = 0; i < HEIGHT; i += 1) {
-    for (int j = 0; j < WIDTH; j += 1) {
+  for (int i = PIXEL_START_Y; i < PIXEL_START_Y+HEIGHT; i += 1) {
+    for (int j = PIXEL_START_X; j < PIXEL_START_X+WIDTH; j += 1) {
       double sum = 0;
-      for (int k1 = 0; k1 < 20; k1 += 1)
-        for (int k2 = 0; k2 < 20; k2 += 1)
-          sum += fb->buf[(20*i+k1)*fb->width+20*j+k2];
+      for (int k1 = 0; k1 < PIXEL_SIZE; k1 += 1)
+        for (int k2 = 0; k2 < PIXEL_SIZE; k2 += 1)
+          sum += fb->buf[(PIXEL_SIZE*i+k1)*fb->width+PIXEL_SIZE*j+k2];
 
-      uint8_t bw_pix = sum/(20*20);
-      g_img1[i*WIDTH+j] = (double)bw_pix/255;
+      uint8_t bw_pix = sum/(PIXEL_SIZE*PIXEL_SIZE);
+      g_img1[(i-PIXEL_START_Y)*WIDTH+(j-PIXEL_START_X)] = (double)bw_pix/255;
     }
   }
 
   Coarse2FineFlowWrapper(g_vx, g_vy, g_warpI2, g_img0, g_img1,
-    0.0012, 0.75, 12, 1, 1, 1, 1, HEIGHT, WIDTH, 1);
+    0.00012, 0.75, 9, 1, 1, 1, 1, HEIGHT, WIDTH, 1);
 
   memcpy(g_img0, g_img1, HEIGHT*WIDTH*sizeof(double));
 
@@ -153,26 +171,26 @@ void calc_otpflw() {
   double dx = 0;
   for (int i = 0; i < HEIGHT*WIDTH; i += 1) {
     dy += g_vy[i];
-    dx += g_vx[i];
+    dx -= g_vx[i];
   }
 
   dy = dy / (HEIGHT*WIDTH);
   dx = dx / (HEIGHT*WIDTH);
-  g_dy = dy;
-  g_dx = dx;
-  g_sy += dy * 0.125; // v*t = s
-  g_sx += dx * 0.125;
+  g_dy = dy*100;
+  g_dx = dx*100;
+  g_sy += dy;
+  g_sx += dx;
 
-  // Serial.printf("y = %f, x = %f, fps: %d\n", sy, sx, (int)(1000/(millis() - t)));
+  Serial.printf("$%d,%d,%d\n", (int)g_dy, (int)g_dx, (int)(1000/(millis() - t)));
   // Serial.print("y: ");
-  // for (int i = 0; i < abs(g_sy); i += 1) {
-  //   if (g_sy >= 0) Serial.print("+");
+  // for (int i = 0; i < abs(g_dy); i += 1) {
+  //   if (g_dy >= 0) Serial.print("+");
   //   else Serial.print("-");
   // }
   // Serial.println();
   // Serial.print("x: ");
-  // for (int i = 0; i < abs(g_sx); i += 1) {
-  //   if (g_sx >= 0) Serial.print("+");
+  // for (int i = 0; i < abs(g_dx); i += 1) {
+  //   if (g_dx >= 0) Serial.print("+");
   //   else Serial.print("-");
   // }
   // Serial.println();
@@ -186,11 +204,11 @@ void IRAM_ATTR onTimer1() {
 
 void IRAM_ATTR onTimer2() {}
 
-// timer 8mhz. 80,000,000/prescaler(1000)/counter(10000) = 8hz
+// timer 8mhz. 80,000,000/prescaler(8000)/counter(1000) = 10hz
 void start_timer1() {  
-  timer1 = timerBegin(0, 1000, true);
+  timer1 = timerBegin(0, 8000, true);
   timerAttachInterrupt(timer1, &onTimer1, true);
-  timerAlarmWrite(timer1, 10000, true);
+  timerAlarmWrite(timer1, 800, true);
   timerAlarmEnable(timer1);
 }
 
@@ -271,10 +289,12 @@ void setup() {
   Serial.begin(9600);
   Serial.printf("Start program\n");
 
+#ifdef OUTPUT_PWM
   ledcSetup(LED_CH0, FREQ, RESOLUTION);
   ledcSetup(LED_CH1, FREQ, RESOLUTION);
   ledcAttachPin(LED_PIN_CH0, LED_CH0);
   ledcAttachPin(LED_PIN_CH1, LED_CH1);
+#endif
   
   init_cam();
   start_timer1();
