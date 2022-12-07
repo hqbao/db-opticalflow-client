@@ -24,7 +24,7 @@
 
 #define HEIGHT 12
 #define WIDTH 12
-#define PIXEL_SIZE 4
+#define PIXEL_SIZE 20
 #define PIXEL_START_Y ((240/PIXEL_SIZE - HEIGHT)/2)
 #define PIXEL_START_X ((320/PIXEL_SIZE - WIDTH)/2)
 
